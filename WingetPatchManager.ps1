@@ -240,13 +240,20 @@ function Get-InstalledSoftware {
     $ChocoInstalled = Detect-Chocolatey
 
     # Winget
-    $WingetSoftware = winget list --source winget | Select-Object Id, Name, Version
+    $WingetSoftware = winget list --source winget | Select-Object Id, Name, Version | ForEach-Object {
+        $_ | Add-Member -NotePropertyName Manager -NotePropertyValue 'Winget' -PassThru
+    }
 
     # Chocolatey
     if ($ChocoInstalled) {
         $ChocoSoftware = choco list --local-only --no-color | ForEach-Object {
             $parts = $_ -split '\s'
-            [PSCustomObject]@{ Name = $parts[0]; Version = $parts[1]; Id = $parts[0] }
+            [PSCustomObject]@{ 
+                Name    = $parts[0]
+                Version = $parts[1]
+                Id      = $parts[0] # Choco ID is the name
+                Manager = 'Chocolatey' 
+            }
         }
     } else {
         $ChocoSoftware = @()
@@ -411,3 +418,4 @@ if ($PackagesToUpdate.Count -gt 0) {
 } else {
     Write-Log "No updates needed. NVD scan found no installed packages with recent CVEs."
 }
+
