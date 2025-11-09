@@ -1,4 +1,4 @@
-﻿<#
+<#
 TODO:
    - Automatic mapping updates from online sources
    - Email or Slack notifications for critical updates
@@ -328,9 +328,10 @@ function Get-NVDCVEs {
         [array]$InstalledSoftware
     )
 
-    Write-CVELog "Fetching recent CVEs from NVD..."
-
-    $NVDCVEs = @()
+    Write-CVELog "Querying NVD for CVEs related to installed software..."
+    
+    # This list will hold the IDs of packages that have CVEs
+    $PackagesToUpdate = [System.Collections.Generic.List[string]]::new()
 
     # Get date 30 days ago
     $StartDate = (Get-Date).AddDays(-30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
@@ -338,17 +339,21 @@ function Get-NVDCVEs {
 
 
     foreach ($pkg in $InstalledSoftware) {
+        # Skip packages that don't have a name to query
+        if (-not $pkg.Name) { continue }
+
         $Query = [uri]::EscapeDataString($pkg.Name)
         $NvdUrl = "$NvdFeed?keyword=$Query&pubStartDate=$StartDate&pubEndDate=$EndDate"
 
         try {
             $NvdData = Invoke-RestMethod -Uri $NvdUrl -UseBasicParsing
-            if ($NvdData.result.CVE_Items) {
-                $PkgCVEs = $NvdData.result.CVE_Items | ForEach-Object { $_.cve.CVE_data_meta.ID }
-                if ($PkgCVEs.Count -gt 0) {
-                    Write-Log "Found $($PkgCVEs.Count) CVEs for $($pkg.Name)"
-                    $NVDCVEs += $PkgCVEs
-                }
+            
+            if ($NvdData.result.CVE_Items.Count -gt 0) {
+                # SUCCESS: We found CVEs for this package.
+                Write-Log "Found $($NvdData.result.CVE_Items.Count) recent CVE(s) for $($pkg.Name). Adding to update queue."
+                
+                # Add the package ID (e.g., "Google.Chrome") to the update list
+                $PackagesToUpdate.Add($pkg.Id)
             }
         } catch {
             Write-Log "Failed to fetch NVD CVEs for $($pkg.Name): $_"
@@ -358,9 +363,9 @@ function Get-NVDCVEs {
         Start-Sleep -Milliseconds 600
     }
 
-    $NVDCVEs = $NVDCVEs | Sort-Object -Unique
-    Write-CVELog "Fetched $($NVDCVEs.Count) CVEs from NVD."
-    return $NVDCVEs
+    $UniquePackages = $PackagesToUpdate | Sort-Object -Unique
+    Write-CVELog "NVD query complete. Found $($UniquePackages.Count) packages with recent CVEs."
+    return $UniquePackages
 }
 
 # --- MAIN ---
@@ -376,29 +381,33 @@ $InstalledSoftware = Get-InstalledSoftware
 # Update package mapping for current installed software
 Ensure-PackageMapping
 
-# Fetch CVEs from both sources, log to dedicated CVE log
+# --- CVE-Aware Update Logic ---
+
+# 1. Fetch CISA KEV feed (for logging purposes)
+# NOTE: This list is logged but NOT used to find packages,
+# as we don't have a reliable way to map CISA products to package IDs.
 $KEVCVEs = Get-LatestCVEs | ForEach-Object { $_.cveID }
-$NVDCVEs = Get-NVDCVEs
+Write-CVELog "Fetched $($KEVCVEs.Count) CVEs from CISA KEV feed."
 
-# Merge & deduplicate CVEs
-$AllCVEs = ($KEVCVEs + $NVDCVEs) | Sort-Object -Unique
-Write-Log "Total unique CVEs to process: $($AllCVEs.Count)"
-Write-CVELog "Total unique CVEs to process: $($AllCVEs.Count)"
-
-# Determine which installed packages are affected by CVEs
-$PackagesToUpdate = Map-CVEsToInstalled -CVEs $AllCVEs -InstalledSoftware $InstalledSoftware
+# 2. Fetch NVD CVEs AND build the update list
+# This function now returns a list of package IDs that have recent CVEs
+$PackagesToUpdate = Get-NVDCVEs -InstalledSoftware $InstalledSoftware
 
 # Initialize per-package status CSV log
 if (!(Test-Path $PackageStatusLog)) {
     "Timestamp,Package,Manager,Status" | Out-File -FilePath $PackageStatusLog
 }
 
-# Update only affected packages with enhanced logging and retry
+# 3. Update only affected packages
 if ($PackagesToUpdate.Count -gt 0) {
-    Write-Log "Updating $($PackagesToUpdate.Count) packages affected by CVEs..."
+    Write-Log "Updating $($PackagesToUpdate.Count) packages found with recent CVEs via NVD..."
+    
+    # We pass $InstalledSoftware so the Update function can figure out
+    # if a package is Winget or Chocolatey. (This requires the 
+    # other minor fix I mentioned previously to work perfectly)
     Update-Software -Packages $PackagesToUpdate -InstalledSoftware $InstalledSoftware -MaxRetries 3 -RetryDelaySec 5
+    
     Write-Log "Package updates completed."
 } else {
-    Write-Log "No updates needed based on CVE feed."
+    Write-Log "No updates needed. NVD scan found no installed packages with recent CVEs."
 }
-
