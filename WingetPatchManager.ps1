@@ -182,44 +182,53 @@ function Update-Software {
         [int]$RetryDelaySec = 5
     )
 
-    # Separate installed software by manager
-    $WingetSoftware = $InstalledSoftware | Where-Object { $_.Id }
-    $ChocoSoftware = $InstalledSoftware | Where-Object { $_.Name }
+    # Create a lookup table for faster access
+    $SoftwareMap = $InstalledSoftware | Group-Object -Property Id -AsHashTable
 
-    foreach ($pkg in $Packages) {
+    foreach ($pkgId in $Packages) {
         $success = $false
         $attempt = 0
-        $manager = if ($WingetSoftware.Id -contains $pkg) { "Winget" } elseif ($ChocoSoftware.Name -contains $pkg) { "Chocolatey" } else { "Unknown" }
+        
+        # Find the package object from the master list
+        $pkgObject = $SoftwareMap[$pkgId]
+        
+        if (-not $pkgObject) {
+            Write-Log "Package ID $pkgId not found in installed software list. Skipping."
+            continue
+        }
+
+        # Get the manager from the object
+        $manager = $pkgObject.Manager
 
         while (-not $success -and $attempt -lt $MaxRetries) {
             $attempt++
             try {
                 if ($manager -eq "Winget") {
-                    Write-Log "[$attempt/$MaxRetries] Updating $pkg via Winget..."
-                    winget upgrade --id $pkg --accept-source-agreements --accept-package-agreements
+                    Write-Log "[$attempt/$MaxRetries] Updating $pkgId via Winget..."
+                    winget upgrade --id $pkgId --accept-source-agreements --accept-package-agreements
                     $success = $true
                 } elseif ($manager -eq "Chocolatey") {
-                    Write-Log "[$attempt/$MaxRetries] Updating $pkg via Chocolatey..."
-                    choco upgrade $pkg -y
+                    Write-Log "[$attempt/$MaxRetries] Updating $pkgId via Chocolatey..."
+                    choco upgrade $pkgId -y
                     $success = $true
                 } else {
-                    Write-Log "Package $pkg not found in Winget or Chocolatey, skipping."
-                    $success = $true  # consider as success so it won't retry
+                    Write-Log "Package $pkgId has unknown manager '$manager', skipping."
+                    $success = $true # consider as success so it won't retry
                 }
             } catch {
-                Write-Log "Update attempt $attempt failed for $pkg: $_"
+                Write-Log "Update attempt $attempt failed for $pkgId: $_"
                 Start-Sleep -Seconds $RetryDelaySec
             }
 
             # Log attempt to CSV
             $status = if ($success) { "Success" } else { "Failed" }
-            Log-PackageStatus -Package $pkg -Manager $manager -Status "$status (Attempt $attempt)"
+            Log-PackageStatus -Package $pkgId -Manager $manager -Status "$status (Attempt $attempt)"
         }
 
         if (-not $success) {
-            Write-Log "Update ultimately failed after $MaxRetries attempts: $pkg"
+            Write-Log "Update ultimately failed after $MaxRetries attempts: $pkgId"
         } else {
-            Write-Log "Update completed: $pkg ($manager)"
+            Write-Log "Update completed: $pkgId ($manager)"
         }
     }
 }
@@ -418,4 +427,5 @@ if ($PackagesToUpdate.Count -gt 0) {
 } else {
     Write-Log "No updates needed. NVD scan found no installed packages with recent CVEs."
 }
+
 
