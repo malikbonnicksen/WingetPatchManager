@@ -43,7 +43,7 @@ function Ensure-PowerShell7 {
 
     if (-not (Test-Path $pwshPath)) {
         Write-Log "PowerShell 7 not found, downloading and installing..."
-        $InstallerUrl = "https://github.com/PowerShell/PowerShell/releases/latest/download/PowerShell-7.4.5-win-x64.msi"
+        $InstallerUrl = "https://github.com/PowerShell/PowerShell/releases/latest/download/PowerShell-7-LTS-win-x64.msi"
         $TempInstaller = Join-Path $env:TEMP "PowerShell7.msi"
         Invoke-WebRequest -Uri $InstallerUrl -OutFile $TempInstaller
         Start-Process msiexec.exe -ArgumentList "/i `"$TempInstaller`" /quiet /norestart" -Wait
@@ -301,43 +301,6 @@ function Ensure-PackageMapping {
     Write-Log "Package mapping updated: $MappingFile (removed stale entries)"
 }
 
-function Map-CVEsToInstalled {
-    param($CVEs, $InstalledSoftware)
-
-    $MappingFile = Join-Path $InstallDir "PackageMapping.json"
-    if (-not (Test-Path $MappingFile)) {
-        Write-Log "PackageMapping.json not found, skipping CVE mapping."
-        return @()
-    }
-
-    # Load mapping as hashtable for O(1) lookups
-    $Mapping = @{}
-    (Get-Content $MappingFile | ConvertFrom-Json) | ForEach-Object { 
-        $Mapping[$_.Name] = $_
-    }
-
-    # Build hashtable of installed software names for quick lookup
-    $InstalledHash = @{}
-    foreach ($pkg in $InstalledSoftware) {
-        $InstalledHash[$pkg.Name] = $true
-    }
-
-    $UpdatesNeeded = @()
-
-    foreach ($cve in $CVEs) {
-        # Only iterate installed software
-        foreach ($pkgName in $InstalledHash.Keys) {
-            if ($Mapping.ContainsKey($pkgName)) {
-                $entry = $Mapping[$pkgName]
-                if ($entry.WingetId) { $UpdatesNeeded += $entry.WingetId }
-                elseif ($entry.ChocoId) { $UpdatesNeeded += $entry.ChocoId }
-            }
-        }
-    }
-
-    return $UpdatesNeeded | Sort-Object -Unique
-}
-
 function Get-NVDCVEs {
     param(
         [Parameter(Mandatory=$true)]
@@ -427,5 +390,6 @@ if ($PackagesToUpdate.Count -gt 0) {
 } else {
     Write-Log "No updates needed. NVD scan found no installed packages with recent CVEs."
 }
+
 
 
